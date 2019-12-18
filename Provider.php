@@ -2,6 +2,7 @@
 
 namespace SocialiteProviders\Instagram;
 
+use GuzzleHttp\ClientInterface;
 use SocialiteProviders\Manager\OAuth2\AbstractProvider;
 use SocialiteProviders\Manager\OAuth2\User;
 
@@ -20,7 +21,7 @@ class Provider extends AbstractProvider
     /**
      * {@inheritdoc}
      */
-    protected $scopes = ['basic'];
+    protected $scopes = ['user_profile'];
 
     /**
      * {@inheritdoc}
@@ -30,6 +31,25 @@ class Provider extends AbstractProvider
         return $this->buildAuthUrlFromBase(
             'https://api.instagram.com/oauth/authorize', $state
         );
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    protected function getCodeFields($state = null)
+    {
+        $fields = [
+            'app_id' => $this->clientId,
+            'redirect_uri' => $this->redirectUrl,
+            'scope' => $this->formatScopes($this->getScopes(), $this->scopeSeparator),
+            'response_type' => 'code',
+        ];
+
+        if ($this->usesState()) {
+            $fields['state'] = $state;
+        }
+
+        return array_merge($fields, $this->parameters);
     }
 
     /**
@@ -45,22 +65,20 @@ class Provider extends AbstractProvider
      */
     protected function getUserByToken($token)
     {
-        $endpoint = '/users/self';
         $query = [
             'access_token' => $token,
         ];
-        $signature = $this->generateSignature($endpoint, $query);
 
-        $query['sig'] = $signature;
+        $query['fields'] = 'id,username';
         $response = $this->getHttpClient()->get(
-            'https://api.instagram.com/v1/users/self', [
+            'https://graph.instagram.com/me', [
             'query'   => $query,
             'headers' => [
                 'Accept' => 'application/json',
             ],
         ]);
 
-        return json_decode($response->getBody()->getContents(), true)['data'];
+        return json_decode($response->getBody()->getContents(), true);
     }
 
     /**
@@ -69,24 +87,26 @@ class Provider extends AbstractProvider
     protected function mapUserToObject(array $user)
     {
         return (new User())->setRaw($user)->map([
-            'id'     => $user['id'], 'nickname' => $user['username'],
-            'name'   => $user['full_name'], 'email' => null,
-            'avatar' => $user['profile_picture'],
+            'id'     => $user['id'],
+            'nickname' => $user['username'],
+            'name'   => $user['username'],
+            'email' => null,
+            'avatar' => null,
         ]);
     }
 
     /**
      * {@inheritdoc}
      */
-    public function getAccessToken($code)
+    public function getAccessTokenResponse($code)
     {
+        $postKey = (version_compare(ClientInterface::VERSION, '6') === 1) ? 'form_params' : 'body';
         $response = $this->getHttpClient()->post($this->getTokenUrl(), [
-            'form_params' => $this->getTokenFields($code),
+            'headers' => ['Accept' => 'application/json'],
+            $postKey => $this->getTokenFields($code),
         ]);
 
-        $this->credentialsResponseBody = json_decode($response->getBody(), true);
-
-        return $this->parseAccessToken($response->getBody());
+        return json_decode($response->getBody(), true);
     }
 
     /**
@@ -94,9 +114,13 @@ class Provider extends AbstractProvider
      */
     protected function getTokenFields($code)
     {
-        return array_merge(parent::getTokenFields($code), [
-            'grant_type' => 'authorization_code',
-        ]);
+        return [
+            'app_id' => $this->clientId,
+            'app_secret' => $this->clientSecret,
+            'code' => $code,
+            'redirect_uri' => $this->redirectUrl,
+            'grant_type' => 'authorization_code'
+        ];
     }
 
     /**
